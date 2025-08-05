@@ -1,0 +1,53 @@
+[package]
+name = "piebot"
+version = "0.1.0"
+edition = "2021"
+authors = ["PieBot Team"]
+description = "A chess engine based on AlphaZero, implemented in Rust"
+
+[dependencies]
+# Chess library
+chess = "3.2.0"
+
+# PyTorch bindings for Rust
+tch = "0.20.0"
+
+# Array manipulation
+ndarray = "0.15"
+
+# Parallel processing
+rayon = "1.8"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Command line parsing
+clap = { version = "4.4", features = ["derive"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Logging
+log = "0.4"
+env_logger = "0.10"
+
+# Progress bars
+indicatif = "0.17"
+
+# Random number generation
+rand = "0.8"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+pretty_assertions = "1.4"
+
+[[bench]]
+name = "mcts_benchmark"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
