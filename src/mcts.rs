@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chess::{Board, ChessMove, Color, Game, GameResult, MoveGen};
+use chess::{ChessMove, Game, GameResult, MoveGen};
 use std::sync::{Arc, Mutex};
 use ndarray::Array1;
 use tch::Device;

@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 use ndarray::{Array3, Array1, s};
-use chess::{Board, ChessMove, Piece, Color, Square, MoveGen, ALL_SQUARES, Rank, File};
+use chess::{Board, ChessMove, Piece, Color, Square, MoveGen, ALL_SQUARES, Rank};
 use tch::{Tensor, Device, Kind};
 use std::str::FromStr;
 

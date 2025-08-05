@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Play chess against the AlphaZero engine", long_about = None)]
+#[command(author, version, about = "Play chess against the PieBot engine", long_about = None)]
 struct Args {
     /// Path to model (.pt) file
     #[arg(long)]
