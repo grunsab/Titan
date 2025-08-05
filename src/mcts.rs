@@ -365,11 +365,105 @@ impl Root {
         device: Device,
         num_rollouts: usize,
     ) -> Result<()> {
-        // For now, do rollouts sequentially
-        // TODO: Implement proper parallel rollouts with batching
+        // Collect all selection results
+        let mut games = Vec::with_capacity(num_rollouts);
+        let mut node_paths = Vec::with_capacity(num_rollouts);
+        let mut edge_paths = Vec::with_capacity(num_rollouts);
+        let mut is_terminal = Vec::with_capacity(num_rollouts);
+        
+        // Phase 1: Selection for all rollouts
         for _ in 0..num_rollouts {
-            self.rollout(game, network, device)?;
+            let mut game_copy = game.clone();
+            let mut nodes = Vec::new();
+            let mut edges = Vec::new();
+            
+            self.select_leaf(&mut game_copy, &mut nodes, &mut edges);
+            
+            let terminal = edges.last().is_none();
+            is_terminal.push(terminal);
+            games.push(game_copy);
+            node_paths.push(nodes);
+            edge_paths.push(edges);
         }
+        
+        // Phase 2: Separate terminal and non-terminal nodes
+        let mut boards_to_evaluate = Vec::new();
+        let mut board_indices = Vec::new();
+        
+        for (i, terminal) in is_terminal.iter().enumerate() {
+            if !terminal {
+                boards_to_evaluate.push(games[i].current_position());
+                board_indices.push(i);
+            }
+        }
+        
+        // Phase 3: Batch neural network evaluation for non-terminal nodes
+        let mut nn_results = None;
+        if !boards_to_evaluate.is_empty() {
+            nn_results = Some(encoder::call_neural_network_batched(
+                &boards_to_evaluate,
+                network,
+                device,
+            )?);
+        }
+        
+        // Phase 4: Process results and update tree
+        for i in 0..num_rollouts {
+            let new_q = if is_terminal[i] {
+                // Terminal node - calculate based on game result
+                let result = games[i].result();
+                let winner = match result {
+                    Some(GameResult::WhiteCheckmates) => 1,
+                    Some(GameResult::BlackCheckmates) => -1,
+                    Some(GameResult::WhiteResigns) => -1,
+                    Some(GameResult::BlackResigns) => 1,
+                    _ => 0, // Draw or ongoing
+                };
+                
+                let board = games[i].current_position();
+                let value = (winner as f32) / 2.0 + 0.5;
+                
+                // Adjust for side to move
+                if board.side_to_move() == chess::Color::Black {
+                    1.0 - value
+                } else {
+                    value
+                }
+            } else {
+                // Non-terminal node - use neural network result
+                if let Some((ref values, ref move_probs)) = nn_results {
+                    // Find the index in the batch
+                    let batch_idx = board_indices.iter().position(|&idx| idx == i).unwrap();
+                    let value = values[batch_idx];
+                    let q = value / 2.0 + 0.5;
+                    
+                    // Expand the node
+                    if let Some(edge) = edge_paths[i].last() {
+                        let expanded = edge.expand(&games[i], q, move_probs[batch_idx].clone());
+                        if !expanded {
+                            *self.same_paths.lock().unwrap() += 1;
+                        }
+                    }
+                    
+                    1.0 - q
+                } else {
+                    0.5 // Should not happen
+                }
+            };
+            
+            // Backpropagate
+            let last_node_idx = node_paths[i].len() - 1;
+            for (j, node) in node_paths[i].iter().enumerate().rev() {
+                let from_child = (last_node_idx - j) % 2 == 1;
+                node.update_stats(new_q, from_child);
+            }
+            
+            // Clear virtual losses
+            for edge in &edge_paths[i] {
+                edge.clear_virtual_loss();
+            }
+        }
+        
         Ok(())
     }
     
