@@ -10,7 +10,7 @@ description = "A chess engine based on AlphaZero, implemented in Rust"
 chess = "3.2.0"
 
 # PyTorch bindings for Rust
-tch = "0.20.0"
+tch = {version = "0.20.0" }
 
 # Array manipulation
 ndarray = "0.15"
