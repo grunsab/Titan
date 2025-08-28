@@ -306,7 +306,7 @@ impl Searcher {
             // avoid in check
             if (board.checkers()).is_empty() {
                 // null move
-                let mut nb = board.clone();
+                let nb = board.clone();
                 // cozy_chess null move; if unavailable, skip
                 let null_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     nb.null_move();
@@ -438,7 +438,7 @@ impl Searcher {
         for (idx, m) in moves.into_iter().enumerate() {
             let mut child = board.clone();
             child.play(m);
-            let mut score;
+            let score;
             if self.use_lmr && depth >= 3 {
                 // Simple LMR: reduce late quiet moves
                 let is_cap = self.is_capture(&board, m);
@@ -512,8 +512,8 @@ impl Searcher {
             self.tt.bump_generation();
             let r = if self.use_aspiration && d > 1 {
                 let window = params.aspiration_window_cp.max(10);
-                let mut alpha = last_score - window;
-                let mut beta = last_score + window;
+                let alpha = last_score - window;
+                let beta = last_score + window;
                 let mut res = self.search_depth_window(board, d, alpha, beta);
                 if res.score_cp <= alpha || res.score_cp >= beta {
                     res = self.search_depth(board, d);

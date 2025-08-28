@@ -1,5 +1,4 @@
 use std::io::{self, BufRead};
-use std::time::Duration;
 #[cfg(not(feature = "board-pleco"))]
 use crate::board::cozy::Position;
 #[cfg(not(feature = "board-pleco"))]
@@ -12,7 +11,7 @@ use crate::search::alphabeta::{Searcher, SearchParams};
 #[cfg(feature = "board-pleco")]
 mod pleco_uci {
     use super::*;
-    use pleco::{Board as PBoard, BitMove as PMove, PieceType, SQ};
+    use pleco::{Board as PBoard, BitMove as PMove};
     use rayon::ThreadPoolBuilder;
     use crate::search::alphabeta_pleco::PlecoSearcher;
 
