@@ -7,3 +7,5 @@ pub mod see;
 pub mod alphabeta_pleco;
 #[cfg(feature = "board-pleco")]
 pub mod tt_pleco;
+#[cfg(feature = "board-pleco")]
+pub mod see_pleco;

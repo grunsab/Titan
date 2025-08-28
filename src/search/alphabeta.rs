@@ -1,5 +1,5 @@
 use cozy_chess::{Board, Move, Square};
-use crate::search::eval::{eval_cp, MATE_SCORE, DRAW_SCORE};
+use crate::search::eval::{eval_cp, material_eval_cp, MATE_SCORE, DRAW_SCORE};
 use std::time::{Duration, Instant};
 use crate::search::zobrist;
 use crate::search::tt::{Tt, Entry, Bound};
@@ -109,6 +109,11 @@ pub struct Searcher {
     history_table: Vec<i32>,
     counter_move: Vec<usize>,
     deterministic: bool,
+    // Eval mode: material-only, PST, or NNUE
+    eval_mode: EvalMode,
+    // Instrumentation
+    last_depth: u32,
+    max_seldepth: u32,
 }
 
 impl Default for Searcher {
@@ -136,11 +141,24 @@ impl Default for Searcher {
             history_table: vec![0; HIST_SIZE],
             counter_move: vec![usize::MAX; HIST_SIZE],
             deterministic: false,
+            eval_mode: EvalMode::Pst,
+            last_depth: 0,
+            max_seldepth: 0,
         }
     }
 }
 
 impl Searcher {
+    // Choose evaluation mode
+    pub fn set_eval_mode(&mut self, mode: EvalMode) { self.eval_mode = mode; }
+    pub fn set_threads(&mut self, t: usize) { self.threads = t.max(1); }
+    pub fn set_order_captures(&mut self, on: bool) { self.order_captures = on; }
+    pub fn set_use_history(&mut self, on: bool) { self.use_history = on; }
+    pub fn set_use_killers(&mut self, on: bool) { self.use_killers = on; }
+    pub fn set_use_lmr(&mut self, on: bool) { self.use_lmr = on; }
+    pub fn set_use_nullmove(&mut self, on: bool) { self.use_nullmove = on; }
+    pub fn set_use_aspiration(&mut self, on: bool) { self.use_aspiration = on; }
+    pub fn set_deterministic(&mut self, on: bool) { self.deterministic = on; }
     pub fn see_gain_cp(&mut self, board: &Board, uci: &str) -> Option<i32> {
         // Locate a matching legal move by UCI string
         let mut chosen: Option<Move> = None;
@@ -156,23 +174,32 @@ impl Searcher {
         self.qsearch(board, -MATE_SCORE, MATE_SCORE)
     }
 
+    // Time-managed iterative deepening up to a maximum depth
+    pub fn search_movetime(&mut self, board: &Board, millis: u64, depth: u32) -> (Option<String>, i32, u64) {
+        self.nodes = 0;
+        self.node_limit = u64::MAX;
+        self.deadline = Some(Instant::now() + Duration::from_millis(millis));
+        if self.use_history {
+            for h in &mut self.history_table { *h = 0; }
+            for c in &mut self.counter_move { *c = usize::MAX; }
+        }
+        let max_depth = if depth == 0 { 99 } else { depth };
+        let mut best: Option<String> = None;
+        let mut last_score = 0;
+        for d in 1..=max_depth {
+            self.tt.bump_generation();
+            let res = self.search_depth(board, d);
+            best = res.bestmove.clone();
+            last_score = res.score_cp;
+            self.last_depth = d;
+            if let Some(dl) = self.deadline { if Instant::now() >= dl { break; } }
+        }
+        (best, last_score, self.nodes)
+    }
+
     fn qsearch(&mut self, board: &Board, mut alpha: i32, beta: i32) -> i32 {
         // Stand pat
-        let stand = if self.use_nnue {
-            let nnue_val = if let Some(qn) = self.nnue_quant.as_ref() {
-                let val = qn.eval_current();
-                if board.side_to_move() == cozy_chess::Color::White { val } else { -val }
-            } else if let Some(nn) = &self.nnue {
-                let score = nn.evaluate(board);
-                if board.side_to_move() == cozy_chess::Color::White { score } else { -score }
-            } else {
-                eval_cp(board)
-            };
-            if self.eval_blend_percent >= 100 { nnue_val } else if self.eval_blend_percent == 0 { eval_cp(board) } else {
-                let pst = eval_cp(board);
-                ((nnue_val as i64 * self.eval_blend_percent as i64 + pst as i64 * (100 - self.eval_blend_percent) as i64) / 100) as i32
-            }
-        } else { self.eval_cp_internal(board) };
+        let stand = self.eval_current(board);
         if stand >= beta { return beta; }
         if stand > alpha { alpha = stand; }
 
@@ -489,6 +516,7 @@ impl Searcher {
     pub fn search_with_params(&mut self, board: &Board, params: SearchParams) -> SearchResult {
         // Configure this search
         self.nodes = 0;
+        self.last_depth = 0;
         self.node_limit = params.max_nodes.unwrap_or(u64::MAX);
         if !params.use_tt { self.tt = Arc::new(Tt::new()); }
         self.order_captures = params.order_captures;
@@ -524,6 +552,7 @@ impl Searcher {
             };
             best = r.bestmove.clone();
             last_score = r.score_cp;
+            self.last_depth = d;
             if self.nodes >= self.node_limit { break; }
             if let Some(dl) = self.deadline { if Instant::now() >= dl { break; } }
         }
@@ -601,6 +630,8 @@ impl Searcher {
         self.tt = Arc::new(tt);
     }
     pub fn get_threads(&self) -> usize { self.threads }
+    pub fn last_depth(&self) -> u32 { self.last_depth }
+    pub fn last_seldepth(&self) -> u32 { self.max_seldepth }
 
     pub fn set_use_nnue(&mut self, on: bool) { self.use_nnue = on; }
     pub fn set_nnue_network(&mut self, nn: Option<crate::eval::nnue::Nnue>) { self.nnue = nn; }
@@ -608,26 +639,29 @@ impl Searcher {
     pub fn clear_nnue_quant(&mut self) { self.nnue_quant = None; }
     pub fn set_eval_blend_percent(&mut self, p: u8) { self.eval_blend_percent = p.min(100); }
 
-    fn eval_cp_internal(&self, board: &Board) -> i32 {
-        if self.use_nnue {
-            let mut have_nnue = false;
-            let mut nnue_sided = 0i32;
-            if let Some(qn) = &self.nnue_quant {
-                let score = qn.eval_full(board);
-                nnue_sided = if board.side_to_move() == cozy_chess::Color::White { score } else { -score };
-                have_nnue = true;
-            } else if let Some(nn) = &self.nnue {
-                let score = nn.evaluate(board);
-                nnue_sided = if board.side_to_move() == cozy_chess::Color::White { score } else { -score };
-                have_nnue = true;
-            }
-            if have_nnue {
-                if self.eval_blend_percent >= 100 { return nnue_sided; }
-                let pst = eval_cp(board);
-                if self.eval_blend_percent == 0 { return pst; }
-                return ((nnue_sided as i64 * self.eval_blend_percent as i64 + pst as i64 * (100 - self.eval_blend_percent) as i64) / 100) as i32;
+    fn eval_cp_internal(&self, board: &Board) -> i32 { self.eval_current(board) }
+
+    #[inline]
+    fn eval_current(&self, board: &Board) -> i32 {
+        match self.eval_mode {
+            EvalMode::Material => material_eval_cp(board),
+            EvalMode::Pst => eval_cp(board),
+            EvalMode::Nnue => {
+                // Fall back to PST if no NNUE configured
+                if self.use_nnue {
+                    if let Some(qn) = &self.nnue_quant {
+                        let score = qn.eval_full(board);
+                        return if board.side_to_move() == cozy_chess::Color::White { score } else { -score };
+                    } else if let Some(nn) = &self.nnue {
+                        let score = nn.evaluate(board);
+                        return if board.side_to_move() == cozy_chess::Color::White { score } else { -score };
+                    }
+                }
+                eval_cp(board)
             }
         }
-        eval_cp(board)
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+pub enum EvalMode { Material, Pst, Nnue }
