@@ -1,15 +1,17 @@
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead};
 use std::time::Duration;
 use crate::board::cozy::Position;
-use crate::search::alphabeta::Searcher;
+use crate::search::alphabeta::{Searcher, SearchParams};
 
 pub struct UciEngine {
     pos: Position,
     searcher: Searcher,
+    hash_mb: usize,
+    threads: usize,
 }
 
 impl UciEngine {
-    pub fn new() -> Self { Self { pos: Position::startpos(), searcher: Searcher::default() } }
+    pub fn new() -> Self { Self { pos: Position::startpos(), searcher: Searcher::default(), hash_mb: 64, threads: 1 } }
 
     fn cmd_uci(&self) {
         println!("id name PieBot NNUE (skeleton)");
@@ -22,6 +24,18 @@ impl UciEngine {
     fn cmd_isready(&self) { println!("readyok"); }
 
     fn cmd_ucinewgame(&mut self) { self.pos = Position::startpos(); }
+
+    pub(crate) fn apply_setoption(&mut self, name: &str, value: &str) {
+        match name.to_lowercase().as_str() {
+            "hash" => {
+                if let Ok(mb) = value.parse::<usize>() { self.hash_mb = mb; self.searcher.set_tt_capacity_mb(mb); }
+            }
+            "threads" => {
+                if let Ok(t) = value.parse::<usize>() { self.threads = t.max(1); }
+            }
+            _ => {}
+        }
+    }
 
     fn cmd_position(&mut self, args: &str) {
         // Supports: 'position startpos [moves ...]' and 'position fen <fen> [moves ...]'
@@ -54,19 +68,48 @@ impl UciEngine {
         }
     }
 
+    fn cmd_setoption(&mut self, args: &str) {
+        // setoption name <name> [value <value>]
+        let mut tokens = args.split_whitespace();
+        if tokens.next() != Some("name") { return; }
+        let mut name_parts = Vec::new();
+        let mut value: Option<String> = None;
+        for tok in tokens {
+            if tok == "value" {
+                value = Some(String::new());
+                continue;
+            }
+            if let Some(v) = value.as_mut() { if !v.is_empty() { v.push(' '); } v.push_str(tok); } else { name_parts.push(tok.to_string()); }
+        }
+        let name = name_parts.join(" ");
+        let val = value.unwrap_or_else(|| "".to_string());
+        self.apply_setoption(&name, &val);
+    }
+
     fn cmd_go(&mut self, args: &str) {
-        // Support minimal: go depth N | go movetime T (fallback to depth)
-        let mut depth: u32 = 3;
+        // Support minimal: go depth N | go movetime T
+        let mut depth: u32 = 6;
+        let mut movetime_ms: Option<u64> = None;
         let mut tokens = args.split_whitespace();
         while let Some(tok) = tokens.next() {
             match tok {
                 "depth" => {
                     if let Some(d) = tokens.next().and_then(|s| s.parse::<u32>().ok()) { depth = d; }
                 }
+                "movetime" => {
+                    if let Some(t) = tokens.next().and_then(|s| s.parse::<u64>().ok()) { movetime_ms = Some(t); }
+                }
                 _ => {}
             }
         }
-        let res = self.searcher.search_depth(self.pos.board(), depth);
+        let mut params = SearchParams::default();
+        params.depth = depth;
+        params.use_tt = true;
+        params.order_captures = true;
+        params.use_history = true;
+        params.movetime = movetime_ms.map(Duration::from_millis);
+        params.threads = self.threads;
+        let res = self.searcher.search_with_params(self.pos.board(), params);
         if let Some(best) = res.bestmove { println!("bestmove {}", best); } else { println!("bestmove 0000"); }
     }
 
@@ -78,6 +121,7 @@ impl UciEngine {
             if line == "uci" { self.cmd_uci(); continue; }
             if line == "isready" { self.cmd_isready(); continue; }
             if line == "ucinewgame" { self.cmd_ucinewgame(); continue; }
+            if let Some(rest) = line.strip_prefix("setoption ") { self.cmd_setoption(rest); continue; }
             if line == "quit" { break; }
             if let Some(rest) = line.strip_prefix("position ") { self.cmd_position(rest); continue; }
             if let Some(rest) = line.strip_prefix("go ") { self.cmd_go(rest); continue; }

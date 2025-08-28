@@ -4,5 +4,7 @@ pub mod perft;
 pub mod board;
 pub mod io;
 pub mod search;
+pub mod selfplay;
+pub mod eval;
 
 // Re-exports kept minimal for new engine path

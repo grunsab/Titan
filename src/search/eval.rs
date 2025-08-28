@@ -34,3 +34,116 @@ pub fn material_eval_cp(board: &Board) -> i32 {
 pub const MATE_SCORE: i32 = 30_000;
 pub const DRAW_SCORE: i32 = 0;
 
+// Simple PSTs (from white's perspective); values in centipawns
+// Lightweight, hand-rolled to encourage centralization/development
+// Indexing: 0..63 = rank*8 + file, with rank/file from 0..7 for white's POV.
+const PST_PAWN: [i16; 64] = [
+     0,  0,  0,  0,  0,  0,  0,  0,
+     5, 10, 10,-20,-20, 10, 10,  5,
+     5, -5,-10,  0,  0,-10, -5,  5,
+     0,  0,  0, 20, 20,  0,  0,  0,
+     5,  5, 10, 25, 25, 10,  5,  5,
+    10, 10, 20, 30, 30, 20, 10, 10,
+    50, 50, 50, 50, 50, 50, 50, 50,
+     0,  0,  0,  0,  0,  0,  0,  0,
+];
+const PST_KNIGHT: [i16; 64] = [
+   -50,-40,-30,-30,-30,-30,-40,-50,
+   -40,-20,  0,  0,  0,  0,-20,-40,
+   -30,  0, 10, 15, 15, 10,  0,-30,
+   -30,  5, 15, 20, 20, 15,  5,-30,
+   -30,  0, 15, 20, 20, 15,  0,-30,
+   -30,  5, 10, 15, 15, 10,  5,-30,
+   -40,-20,  0,  5,  5,  0,-20,-40,
+   -50,-40,-30,-30,-30,-30,-40,-50,
+];
+const PST_BISHOP: [i16; 64] = [
+   -20,-10,-10,-10,-10,-10,-10,-20,
+   -10,  5,  0,  0,  0,  0,  5,-10,
+   -10, 10, 10, 10, 10, 10, 10,-10,
+   -10,  0, 10, 10, 10, 10,  0,-10,
+   -10,  5,  5, 10, 10,  5,  5,-10,
+   -10,  0,  5, 10, 10,  5,  0,-10,
+   -10,  0,  0,  0,  0,  0,  0,-10,
+   -20,-10,-10,-10,-10,-10,-10,-20,
+];
+const PST_ROOK: [i16; 64] = [
+     0,  0,  5, 10, 10,  5,  0,  0,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+     5, 10, 10, 10, 10, 10, 10,  5,
+     0,  0,  0,  0,  0,  0,  0,  0,
+];
+const PST_QUEEN: [i16; 64] = [
+   -20,-10,-10, -5, -5,-10,-10,-20,
+   -10,  0,  0,  0,  0,  0,  0,-10,
+   -10,  0,  5,  5,  5,  5,  0,-10,
+    -5,  0,  5,  5,  5,  5,  0, -5,
+     0,  0,  5,  5,  5,  5,  0, -5,
+   -10,  5,  5,  5,  5,  5,  0,-10,
+   -10,  0,  5,  0,  0,  0,  0,-10,
+   -20,-10,-10, -5, -5,-10,-10,-20,
+];
+const PST_KING: [i16; 64] = [
+    20, 30, 10,  0,  0, 10, 30, 20,
+    20, 20,  0,  0,  0,  0, 20, 20,
+   -10,-20,-20,-20,-20,-20,-20,-10,
+   -20,-30,-30,-40,-40,-30,-30,-20,
+   -30,-40,-40,-50,-50,-40,-40,-30,
+   -30,-40,-40,-50,-50,-40,-40,-30,
+   -30,-40,-40,-50,-50,-40,-40,-30,
+   -30,-40,-40,-50,-50,-40,-40,-30,
+];
+
+fn square_index_from_str(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    if bytes.len() != 2 { return None; }
+    let file = (bytes[0] as char);
+    let rank = (bytes[1] as char);
+    if !('a'..='h').contains(&file) { return None; }
+    if !('1'..='8').contains(&rank) { return None; }
+    let f = (file as u8 - b'a') as usize;
+    let r = (rank as u8 - b'1') as usize;
+    Some(r * 8 + f)
+}
+
+fn pst_value_for(board: &Board, color: Color, piece: Piece) -> i32 {
+    let bb = board.colors(color) & board.pieces(piece);
+    let mut sum = 0i32;
+    for sq in bb { // iterate over squares
+        let s = format!("{}", sq);
+        if let Some(mut idx) = square_index_from_str(&s) {
+            // mirror rank for black
+            if color == Color::Black {
+                let r = idx / 8; let f = idx % 8; idx = (7 - r) * 8 + f;
+            }
+            let v = match piece {
+                Piece::Pawn => PST_PAWN[idx],
+                Piece::Knight => PST_KNIGHT[idx],
+                Piece::Bishop => PST_BISHOP[idx],
+                Piece::Rook => PST_ROOK[idx],
+                Piece::Queen => PST_QUEEN[idx],
+                Piece::King => PST_KING[idx],
+            } as i32;
+            sum += v;
+        }
+    }
+    sum
+}
+
+// Combined material + PST (side-to-move perspective)
+pub fn eval_cp(board: &Board) -> i32 {
+    let mat = material_eval_cp_side_agnostic(board);
+    let pst =
+        pst_value_for(board, Color::White, Piece::Pawn) - pst_value_for(board, Color::Black, Piece::Pawn) +
+        pst_value_for(board, Color::White, Piece::Knight) - pst_value_for(board, Color::Black, Piece::Knight) +
+        pst_value_for(board, Color::White, Piece::Bishop) - pst_value_for(board, Color::Black, Piece::Bishop) +
+        pst_value_for(board, Color::White, Piece::Rook) - pst_value_for(board, Color::Black, Piece::Rook) +
+        pst_value_for(board, Color::White, Piece::Queen) - pst_value_for(board, Color::Black, Piece::Queen) +
+        pst_value_for(board, Color::White, Piece::King) - pst_value_for(board, Color::Black, Piece::King);
+    let total = mat + pst;
+    if board.side_to_move() == Color::White { total } else { -total }
+}

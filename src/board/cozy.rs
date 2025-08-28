@@ -1,4 +1,4 @@
-use cozy_chess::{Board as CozyBoard, Move as CozyMove, Color, GameStatus, Piece, Square};
+use cozy_chess::{Board as CozyBoard, Color};
 
 #[derive(Clone, Debug)]
 pub struct Position {
@@ -16,9 +16,15 @@ impl Position {
 
     pub fn board(&self) -> &CozyBoard { &self.board }
 
-    pub fn make_move_uci(&mut self, _mv_uci: &str) -> Result<(), String> {
-        // TODO: Implement UCI parsing using cozy-chess once wired.
-        Err("UCI move parsing not implemented yet".to_string())
+    pub fn make_move_uci(&mut self, mv_uci: &str) -> Result<(), String> {
+        let mut found = None;
+        self.board.generate_moves(|moves| {
+            for m in moves {
+                if format!("{}", m) == mv_uci { found = Some(m); break; }
+            }
+            found.is_some()
+        });
+        if let Some(m) = found { self.board.play(m); Ok(()) } else { Err(format!("Illegal move: {}", mv_uci)) }
     }
 
     pub fn legal_moves_count(&self) -> usize {
