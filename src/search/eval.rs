@@ -1,4 +1,4 @@
-use cozy_chess::{Board, Color, Piece};
+use cozy_chess::{Board, Color, Piece, Square};
 
 const PAWN: i32 = 100;
 const KNIGHT: i32 = 320;
@@ -98,38 +98,30 @@ const PST_KING: [i16; 64] = [
    -30,-40,-40,-50,-50,-40,-40,-30,
 ];
 
-fn square_index_from_str(s: &str) -> Option<usize> {
-    let bytes = s.as_bytes();
-    if bytes.len() != 2 { return None; }
-    let file = (bytes[0] as char);
-    let rank = (bytes[1] as char);
-    if !('a'..='h').contains(&file) { return None; }
-    if !('1'..='8').contains(&rank) { return None; }
-    let f = (file as u8 - b'a') as usize;
-    let r = (rank as u8 - b'1') as usize;
-    Some(r * 8 + f)
+#[inline]
+fn square_index_fast(sq: Square) -> usize {
+    // Cozy-chess implements From<Square> for u8
+    sq as usize
 }
 
 fn pst_value_for(board: &Board, color: Color, piece: Piece) -> i32 {
     let bb = board.colors(color) & board.pieces(piece);
     let mut sum = 0i32;
     for sq in bb { // iterate over squares
-        let s = format!("{}", sq);
-        if let Some(mut idx) = square_index_from_str(&s) {
-            // mirror rank for black
-            if color == Color::Black {
-                let r = idx / 8; let f = idx % 8; idx = (7 - r) * 8 + f;
-            }
-            let v = match piece {
-                Piece::Pawn => PST_PAWN[idx],
-                Piece::Knight => PST_KNIGHT[idx],
-                Piece::Bishop => PST_BISHOP[idx],
-                Piece::Rook => PST_ROOK[idx],
-                Piece::Queen => PST_QUEEN[idx],
-                Piece::King => PST_KING[idx],
-            } as i32;
-            sum += v;
+        let mut idx = square_index_fast(sq);
+        // mirror rank for black
+        if color == Color::Black {
+            let r = idx / 8; let f = idx % 8; idx = (7 - r) * 8 + f;
         }
+        let v = match piece {
+            Piece::Pawn => PST_PAWN[idx],
+            Piece::Knight => PST_KNIGHT[idx],
+            Piece::Bishop => PST_BISHOP[idx],
+            Piece::Rook => PST_ROOK[idx],
+            Piece::Queen => PST_QUEEN[idx],
+            Piece::King => PST_KING[idx],
+        } as i32;
+        sum += v;
     }
     sum
 }

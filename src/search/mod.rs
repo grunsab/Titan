@@ -3,3 +3,7 @@ pub mod alphabeta;
 pub mod zobrist;
 pub mod tt;
 pub mod see;
+#[cfg(feature = "board-pleco")]
+pub mod alphabeta_pleco;
+#[cfg(feature = "board-pleco")]
+pub mod tt_pleco;

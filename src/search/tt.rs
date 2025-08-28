@@ -39,7 +39,8 @@ impl Tt {
 
     fn ensure_init(&mut self) {
         if self.buckets.is_empty() {
-            self.set_capacity_entries(4096);
+            // Use a larger default to reduce contention and collisions under SMP
+            self.set_capacity_entries(65_536);
         }
     }
 

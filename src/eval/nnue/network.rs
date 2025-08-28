@@ -1,5 +1,5 @@
 use crate::eval::nnue::loader::QuantNnue;
-use crate::eval::nnue::features::{HalfKpA, halfkp_dim, HALFKP_PIECE_ORDER};
+use crate::eval::nnue::features::{HalfKpA, HALFKP_PIECE_ORDER};
 use cozy_chess::{Board, Color, Piece, Move};
 use std::collections::HashSet;
 
