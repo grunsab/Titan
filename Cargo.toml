@@ -3,17 +3,13 @@ name = "piebot"
 version = "0.1.0"
 edition = "2021"
 authors = ["PieBot Team"]
-description = "A chess engine based on AlphaZero, implemented in Rust"
+description = "A Rust chess engine with CPU-only NNUE and optimized alpha-beta search"
 
 [dependencies]
-# Chess library
-chess = "3.2.0"
+# Fast board/movegen for new engine path
+cozy-chess = "0.3"
 
-# PyTorch bindings for Rust
-tch = {version = "0.20.0" }
-
-# Array manipulation
-ndarray = "0.15"
+## (Removed old Torch/ndarray dependencies)
 
 # Parallel processing
 rayon = "1.8"
@@ -39,15 +35,21 @@ indicatif = "0.17"
 # Random number generation
 rand = "0.8"
 
+[features]
+default = []
+# CPU SIMD optimization toggles (used later in NNUE/eval paths)
+simd-neon = []
+simd-avx2 = []
+simd-avx512 = []
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 pretty_assertions = "1.4"
 
-[[bench]]
-name = "mcts_benchmark"
-harness = false
+
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
+panic = "abort"
