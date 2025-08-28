@@ -1,6 +1,8 @@
 use std::io::{self, BufRead};
 use std::time::Duration;
 use crate::board::cozy::Position;
+use crate::eval::nnue::Nnue;
+use crate::eval::nnue::loader::QuantNnue;
 use crate::search::alphabeta::{Searcher, SearchParams};
 
 pub struct UciEngine {
@@ -8,16 +10,21 @@ pub struct UciEngine {
     searcher: Searcher,
     hash_mb: usize,
     threads: usize,
+    use_nnue: bool,
+    nnue_loaded: bool,
 }
 
 impl UciEngine {
-    pub fn new() -> Self { Self { pos: Position::startpos(), searcher: Searcher::default(), hash_mb: 64, threads: 1 } }
+    pub fn new() -> Self { Self { pos: Position::startpos(), searcher: Searcher::default(), hash_mb: 64, threads: 1, use_nnue: false, nnue_loaded: false } }
 
     fn cmd_uci(&self) {
         println!("id name PieBot NNUE (skeleton)");
         println!("id author PieBot Team");
         println!("option name Threads type spin default 1 min 1 max 512");
         println!("option name Hash type spin default 64 min 1 max 16384");
+        println!("option name UseNNUE type check default false");
+        println!("option name NNUEFile type string default ");
+        println!("option name NNUEQuantFile type string default ");
         println!("uciok");
     }
 
@@ -32,6 +39,36 @@ impl UciEngine {
             }
             "threads" => {
                 if let Ok(t) = value.parse::<usize>() { self.threads = t.max(1); }
+            }
+            "usennue" => {
+                let on = matches!(value.to_lowercase().as_str(), "true" | "1" | "on" | "yes");
+                self.use_nnue = on;
+                self.searcher.set_use_nnue(on && self.nnue_loaded);
+            }
+            "nnuefile" => {
+                // Attempt to load the dense-f32 dev format (PIENNUE1)
+                match Nnue::load(value) {
+                    Ok(nn) => {
+                        self.searcher.set_nnue_network(Some(nn));
+                        self.nnue_loaded = true;
+                        self.searcher.set_use_nnue(self.use_nnue);
+                    }
+                    Err(_e) => {
+                        // Ignore errors silently for now
+                    }
+                }
+            }
+            "nnuequantfile" => {
+                match QuantNnue::load_quantized(value) {
+                    Ok(model) => {
+                        self.searcher.set_nnue_quant_model(model);
+                        self.nnue_loaded = true;
+                        self.searcher.set_use_nnue(self.use_nnue);
+                    }
+                    Err(_e) => {
+                        // Ignore errors silently for now
+                    }
+                }
             }
             _ => {}
         }

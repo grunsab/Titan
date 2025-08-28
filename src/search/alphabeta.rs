@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicI32, Ordering};
+use crate::eval::nnue::network::QuantNetwork;
+use crate::eval::nnue::loader::QuantNnue;
 
 #[derive(Default, Debug, Clone, Copy)]
 pub struct SearchParams {
@@ -47,6 +49,10 @@ pub struct Searcher {
     use_lmr: bool,
     use_killers: bool,
     use_nullmove: bool,
+    // Optional NNUE evaluator (scalar path for now)
+    use_nnue: bool,
+    nnue: Option<crate::eval::nnue::Nnue>,
+    nnue_quant: Option<QuantNetwork>,
 }
 
 impl Default for Searcher {
@@ -69,6 +75,9 @@ impl Default for Searcher {
             use_lmr: false,
             use_killers: false,
             use_nullmove: false,
+            use_nnue: false,
+            nnue: None,
+            nnue_quant: None,
         }
     }
 }
@@ -90,7 +99,12 @@ impl Searcher {
 
     fn qsearch(&mut self, board: &Board, mut alpha: i32, beta: i32) -> i32 {
         // Stand pat
-        let stand = eval_cp(board);
+        let stand = if self.use_nnue {
+            if let Some(qn) = self.nnue_quant.as_ref() {
+                let val = qn.eval_current();
+                if board.side_to_move() == cozy_chess::Color::White { val } else { -val }
+            } else { self.eval_cp_internal(board) }
+        } else { self.eval_cp_internal(board) };
         if stand >= beta { return beta; }
         if stand > alpha { alpha = stand; }
 
@@ -112,9 +126,11 @@ impl Searcher {
         for m in caps {
             // SEE pruning: skip clearly losing captures
             if let Some(see) = crate::search::see::see_gain_cp(board, m) { if stand + see + 50 < alpha { continue; } }
-            let mut child = board.clone();
-            child.play(m);
+            let mut child = board.clone(); child.play(m);
+            let mut change = None;
+            if self.use_nnue { if let Some(qn) = self.nnue_quant.as_mut() { change = Some(qn.apply_move(board, m, &child)); } }
             let score = -self.qsearch(&child, -beta, -alpha);
+            if let Some(ch) = change { if let Some(qn) = self.nnue_quant.as_mut() { qn.revert(ch); } }
             if score >= beta { return beta; }
             if score > alpha { alpha = score; }
         }
@@ -132,14 +148,17 @@ impl Searcher {
             return self.search_depth_parallel(board, depth);
         }
 
+        if self.use_nnue { if let Some(qn) = self.nnue_quant.as_mut() { qn.refresh(board); } }
         let mut any = false;
         let orig_alpha = alpha;
         board.generate_moves(|moves| {
             for m in moves {
                 any = true;
-                let mut child = board.clone();
-                child.play(m);
+                let mut child = board.clone(); child.play(m);
+                let mut change = None;
+                if self.use_nnue { if let Some(qn) = self.nnue_quant.as_mut() { change = Some(qn.apply_move(board, m, &child)); } }
                 let score = -self.alphabeta(&child, depth.saturating_sub(1), -beta, -alpha, 1);
+                if let Some(ch) = change { if let Some(qn) = self.nnue_quant.as_mut() { qn.revert(ch); } }
                 if score > best_score { best_score = score; bestmove = Some(m); }
                 if score > alpha { alpha = score; }
             }
@@ -177,6 +196,8 @@ impl Searcher {
         let order_captures = self.order_captures;
         let use_history = self.use_history;
         let shared_tt = self.tt.clone();
+        let quant_model = self.nnue_quant.as_ref().map(|qn| qn.model.clone());
+        let use_nnue = self.use_nnue;
         let results: Vec<(Move, i32, u64)> = moves.par_iter().map(|&m| {
             let mut child = board.clone();
             child.play(m);
@@ -186,6 +207,8 @@ impl Searcher {
             w.order_captures = order_captures;
             w.use_history = use_history;
             w.tt = shared_tt.clone();
+            w.use_nnue = use_nnue;
+            if let Some(model) = &quant_model { w.nnue_quant = Some(QuantNetwork::new(model.clone())); if w.use_nnue { if let Some(qn) = w.nnue_quant.as_mut() { qn.refresh(&child); } } }
             let score = -w.alphabeta(&child, depth - 1, -MATE_SCORE, MATE_SCORE, 1);
             (m, score, w.nodes)
         }).collect();
@@ -207,10 +230,10 @@ impl Searcher {
     }
 
     fn alphabeta(&mut self, board: &Board, depth: u32, mut alpha: i32, beta: i32, ply: i32) -> i32 {
-        if let Some(ref flag) = self.abort { if flag.load(Ordering::Relaxed) { return eval_cp(board); } }
+        if let Some(ref flag) = self.abort { if flag.load(Ordering::Relaxed) { return self.eval_cp_internal(board); } }
         self.nodes += 1;
-        if self.nodes >= self.node_limit { return eval_cp(board); }
-        if let Some(dl) = self.deadline { if Instant::now() >= dl { return eval_cp(board); } }
+        if self.nodes >= self.node_limit { return self.eval_cp_internal(board); }
+        if let Some(dl) = self.deadline { if Instant::now() >= dl { return self.eval_cp_internal(board); } }
         if depth == 0 { return self.qsearch(board, alpha, beta); }
         // Null-move pruning (guarded)
         if self.use_nullmove && depth >= 3 {
@@ -277,6 +300,8 @@ impl Searcher {
             let deadline = self.deadline;
             let order_captures = self.order_captures;
             let use_history = self.use_history;
+            let quant_model = self.nnue_quant.as_ref().map(|qn| qn.model.clone());
+            let use_nnue = self.use_nnue;
 
             // PV seed: evaluate first move serially to get a strong alpha
             let mut iter = moves.into_iter();
@@ -289,6 +314,8 @@ impl Searcher {
             seed.order_captures = order_captures;
             seed.use_history = use_history;
             seed.tt = shared_tt.clone();
+            seed.use_nnue = use_nnue;
+            if let Some(model) = &quant_model { seed.nnue_quant = Some(QuantNetwork::new(model.clone())); if seed.use_nnue { if let Some(qn) = seed.nnue_quant.as_mut() { qn.refresh(&child); } } }
             let mut best = -seed.alphabeta(&child, depth - 1, -MATE_SCORE, MATE_SCORE, ply + 1);
             let mut best_move_local: Option<Move> = Some(first);
             self.nodes += seed.nodes;
@@ -306,6 +333,8 @@ impl Searcher {
                 w.order_captures = order_captures;
                 w.use_history = use_history;
                 w.tt = shared_tt.clone();
+                w.use_nnue = use_nnue;
+                if let Some(model) = &quant_model { w.nnue_quant = Some(QuantNetwork::new(model.clone())); if w.use_nnue { if let Some(qn) = w.nnue_quant.as_mut() { qn.refresh(&c); } } }
                 w.abort = Some(abort_flag.clone());
                 // Read current alpha
                 let a = alpha_shared.load(Ordering::Relaxed);
@@ -441,14 +470,17 @@ impl Searcher {
 
         if self.threads > 1 && depth > 1 { return self.search_depth(board, depth); }
 
+        if self.use_nnue { if let Some(qn) = self.nnue_quant.as_mut() { qn.refresh(board); } }
         let mut any = false;
         let orig_alpha = alpha;
         board.generate_moves(|moves| {
             for m in moves {
                 any = true;
-                let mut child = board.clone();
-                child.play(m);
+                let mut child = board.clone(); child.play(m);
+                let mut change = None;
+                if self.use_nnue { if let Some(qn) = self.nnue_quant.as_mut() { change = Some(qn.apply_move(board, m, &child)); } }
                 let score = -self.alphabeta(&child, depth.saturating_sub(1), -beta, -alpha, 1);
+                if let Some(ch) = change { if let Some(qn) = self.nnue_quant.as_mut() { qn.revert(ch); } }
                 if score > best_score { best_score = score; bestmove = Some(m); }
                 if score > alpha { alpha = score; }
             }
@@ -504,4 +536,22 @@ impl Searcher {
         self.tt = Arc::new(tt);
     }
     pub fn get_threads(&self) -> usize { self.threads }
+
+    pub fn set_use_nnue(&mut self, on: bool) { self.use_nnue = on; }
+    pub fn set_nnue_network(&mut self, nn: Option<crate::eval::nnue::Nnue>) { self.nnue = nn; }
+    pub fn set_nnue_quant_model(&mut self, model: QuantNnue) { self.nnue_quant = Some(QuantNetwork::new(model)); }
+    pub fn clear_nnue_quant(&mut self) { self.nnue_quant = None; }
+
+    fn eval_cp_internal(&self, board: &Board) -> i32 {
+        if self.use_nnue {
+            if let Some(qn) = &self.nnue_quant {
+                let score = qn.eval_full(board);
+                return if board.side_to_move() == cozy_chess::Color::White { score } else { -score };
+            } else if let Some(nn) = &self.nnue {
+                let score = nn.evaluate(board);
+                return if board.side_to_move() == cozy_chess::Color::White { score } else { -score };
+            }
+        }
+        eval_cp(board)
+    }
 }

@@ -5,7 +5,7 @@ fn selfplay_generates_games_deterministically() {
     let params = SelfPlayParams {
         games: 2, max_plies: 16, threads: 1, use_engine: false, depth: 2, movetime_ms: None, seed: 42,
         temperature_tau: 0.0, temp_cp_scale: 200.0, dirichlet_alpha: 0.3, dirichlet_epsilon: 0.0,
-        dirichlet_plies: 0, temperature_moves: 0, openings_path: None
+        dirichlet_plies: 0, temperature_moves: 0, openings_path: None, temperature_tau_final: 0.1
     };
     let g1 = generate_games(&params);
     let g2 = generate_games(&params);
@@ -21,7 +21,7 @@ fn selfplay_noise_changes_moves_with_different_seeds() {
     let mut p = SelfPlayParams {
         games: 1, max_plies: 10, threads: 1, use_engine: true, depth: 2, movetime_ms: None, seed: 1,
         temperature_tau: 1.0, temp_cp_scale: 200.0, dirichlet_alpha: 0.3, dirichlet_epsilon: 0.25,
-        dirichlet_plies: 8, temperature_moves: 10, openings_path: None
+        dirichlet_plies: 8, temperature_moves: 10, openings_path: None, temperature_tau_final: 0.1
     };
     let g1 = generate_games(&p);
     p.seed = 2;
