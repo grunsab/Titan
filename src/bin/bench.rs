@@ -107,7 +107,13 @@ fn main() {
     s.set_use_killers(true);
     s.set_use_lmr(true);
     s.set_use_nullmove(true);
+    s.set_null_min_depth(8);
+    s.set_hist_min_depth(10);
+    s.set_root_see_top_k(6);
     s.set_use_aspiration(true);
+    // Enable shallow pruning for benches
+    s.set_use_futility(true);
+    s.set_use_lmp(true);
 
     // Eval mode selection for Cozy
     let eval_mode = if args.material_only { EvalMode::Material } else if let Some(mode) = args.eval.as_deref() {
@@ -140,7 +146,7 @@ fn main() {
         #[cfg(feature = "board-pleco")]
         {
             let eval_str = if let Some(e) = args.eval.as_deref() { e } else if args.use_nnue { "nnue" } else { "pst" };
-            // Cozy run via search_movetime
+            // Cozy run via search_movetime (uses Lazy-SMP internally when threads > 1)
             let t0 = Instant::now();
             let (bm_c, sc_c, nodes_c) = if args.threads > 1 {
                 let pool = rayon::ThreadPoolBuilder::new().num_threads(args.threads).build().unwrap();
@@ -186,8 +192,12 @@ fn main() {
                         if l.is_empty() || l.starts_with('#') { continue; }
                         if l.starts_with('{') {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(l) {
-                                if let (Some(name), Some(fen)) = (v.get("name").and_then(|x| x.as_str()), v.get("fen").and_then(|x| x.as_str())) {
-                                    suite.push((name.to_string(), fen.to_string()));
+                                // Accept {name,fen} or {fen} (optionally with other fields like 'best')
+                                let fen_opt = v.get("fen").and_then(|x| x.as_str());
+                                if let Some(fen) = fen_opt {
+                                    let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("");
+                                    let nm = if name.is_empty() { format!("pos{}", lineno + 1) } else { name.to_string() };
+                                    suite.push((nm, fen.to_string()));
                                 }
                             }
                         } else if let Some((name, fen)) = l.split_once('|') {
@@ -257,6 +267,11 @@ fn main() {
                 sc.set_use_killers(true);
                 sc.set_use_lmr(true);
                 sc.set_use_nullmove(true);
+                sc.set_null_min_depth(8);
+                sc.set_hist_min_depth(10);
+                sc.set_root_see_top_k(6);
+                sc.set_use_futility(true);
+                sc.set_use_lmp(true);
                 sc.set_use_aspiration(true);
                 sc.set_eval_mode(eval_mode);
                 if matches!(eval_mode, EvalMode::Nnue) {
@@ -265,12 +280,11 @@ fn main() {
                     if let Some(d) = args.nnue_file.as_deref() { if let Ok(nn) = piebot::eval::nnue::Nnue::load(d) { sc.set_nnue_network(Some(nn)); } }
                 }
                 let t0 = Instant::now();
-                let (bm_c, sc_c, nodes_c) = if args.threads > 1 {
+                let (bm_c, sc_c, nodes_c, depth_c) = if args.threads > 1 {
                     let pool = rayon::ThreadPoolBuilder::new().num_threads(args.threads).build().unwrap();
-                    pool.install(|| sc.search_movetime(&board, args.movetime, args.depth))
-                } else { sc.search_movetime(&board, args.movetime, args.depth) };
+                    pool.install(|| sc.search_movetime_lazy_smp(&board, args.movetime, args.depth))
+                } else { let (bm, sc_score, n) = sc.search_movetime(&board, args.movetime, args.depth); (bm, sc_score, n, sc.last_depth()) };
                 let dt_c = t0.elapsed().as_secs_f64();
-                let depth_c = sc.last_depth();
                 let nps_c = if dt_c > 0.0 { nodes_c as f64 / dt_c } else { 0.0 };
 
                 // Pleco per-position
