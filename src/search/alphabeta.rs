@@ -478,6 +478,23 @@ impl Searcher {
         let orig_alpha = alpha;
         let mut moves: Vec<Move> = Vec::with_capacity(64);
         board.generate_moves(|ml| { for m in ml { moves.push(m); } false });
+        // Root blunder guard: push obviously hanging quiet moves to the end
+        if depth >= 1 {
+            let loss_thresh = 200; // roughly a minor piece
+            let mut safe: Vec<Move> = Vec::with_capacity(moves.len());
+            let mut blunders: Vec<Move> = Vec::new();
+            for m in moves.drain(..) {
+                // Skip guard for captures and checking moves
+                let is_cap = self.is_capture(board, m);
+                let mut tmp = board.clone(); tmp.play(m);
+                let gives_check = !(tmp.checkers()).is_empty();
+                if !is_cap && !gives_check && crate::search::safety::is_hanging_after_move(board, m, loss_thresh) {
+                    blunders.push(m);
+                } else { safe.push(m); }
+            }
+            safe.extend(blunders.into_iter());
+            moves = safe;
+        }
         if moves.is_empty() { return SearchResult { bestmove: None, score_cp: self.eval_terminal(board, 0), nodes: self.nodes }; }
         // TT-first (Exact-only trust)
         if self.tt_first {
@@ -547,7 +564,11 @@ impl Searcher {
             if self.use_nnue { if let Some(qn) = self.nnue_quant.as_mut() { change = Some(qn.apply_move(board, m, &child)); } }
             let gives_check = !(child.checkers()).is_empty();
             let next_depth = depth.saturating_sub(1) + if gives_check { 1 } else { 0 };
-            let score = -self.alphabeta(&child, next_depth, -beta, -alpha, 1, move_index(m));
+            let mut score = -self.alphabeta(&child, next_depth, -beta, -alpha, 1, move_index(m));
+            // Root preference: avoid immediate stalemate when tied on score (draw)
+            if score == crate::search::eval::DRAW_SCORE && crate::search::safety::is_stalemate(&child) {
+                score -= 1;
+            }
             if let Some(ch) = change { if let Some(qn) = self.nnue_quant.as_mut() { qn.revert(ch); } }
             if score > best_score { best_score = score; bestmove = Some(m); }
             if score > alpha { alpha = score; }
